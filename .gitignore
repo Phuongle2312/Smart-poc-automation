@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+.env.*
+
+# IDEs
+.vscode/
+.idea/
+
+# Dynamic/Runtime Data
+logs/
+data/raw_orders.json
+data/report.json
+data/report.txt
+data/session.json
+data/qdrant_db/
+data/test_runs/
+data/defects/*
+!data/defects/.gitkeep
+
+# Session / Cookies
+cookies.json
+memory/cookies.json
+
+# OS files
+.DS_Store
+Thumbs.db

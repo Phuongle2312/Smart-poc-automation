@@ -1,0 +1,135 @@
+{
+  "name": "Smart PoC Automation Flow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": "interval",
+        "interval": 30,
+        "unit": "minutes"
+      },
+      "id": "a9a3b6f0-4fcb-4be8-8db9-4ff3360b7e28",
+      "name": "Cron Trigger 30m",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        380,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python src/crawler.py"
+      },
+      "id": "e6a0d268-c92c-462d-94bf-6eb828b6d3b4",
+      "name": "Run Crawler (G1)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        600,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [],
+          "string": [
+            {
+              "value1": "={{ $json.exitCode }}",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "id": "0d20d57f-712f-488f-a9cb-b2f4405c10aa",
+      "name": "Check Exit Code",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        820,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python src/analyzer.py && python src/vision_inspector.py"
+      },
+      "id": "27845f21-7294-4d89-9a7c-613d52d9a6c7",
+      "name": "Run Analyzer & Vision (G2 & G3)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts-poc@company.local",
+        "toEmail": "admin-it@company.local",
+        "subject": "[SMART-POC] Alert: Pipeline Error Detected",
+        "emailFormat": "html",
+        "html": "<h3>⚠️ [SMART-POC] Pipeline Alert ⚠️</h3><p>Crawler script failed with exit code <b>{{ $json.exitCode }}</b>.</p><p><b>Error Output</b>:<br/><pre>{{ $json.stderr }}</pre></p><p>Hermes Agent self-healing is triggered. Please check status.</p>"
+      },
+      "id": "f5f190e2-6de6-419b-a0b2-db2d23c2a07c",
+      "name": "Send Alert Email",
+      "type": "n8n-nodes-base.email",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        340
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "mock-smtp-credentials-id"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cron Trigger 30m": {
+      "main": [
+        [
+          {
+            "node": "Run Crawler (G1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Crawler (G1)": {
+      "main": [
+        [
+          {
+            "node": "Check Exit Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Exit Code": {
+      "main": [
+        [
+          {
+            "node": "Run Analyzer & Vision (G2 & G3)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
