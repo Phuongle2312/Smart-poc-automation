@@ -54,7 +54,7 @@ class RoboClawActuator:
             logger.info(f"Attempting to initialize hardware RoboClaw on port {self.port} at {self.baudrate} baud...")
             try:
                 # Dynamic import to avoid crash if roboclaw is not installed
-                from roboclaw import Roboclaw
+                from roboclaw import Roboclaw  # type: ignore
                 self.client = Roboclaw(self.port, self.baudrate)
                 if self.client.Open():
                     logger.info("Successfully connected to RoboClaw hardware.")

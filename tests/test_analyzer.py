@@ -51,33 +51,37 @@ class TestQdrantLocalAndAnalyzer(unittest.TestCase):
         """Prepare raw orders mock data for analysis testing."""
         os.makedirs("data", exist_ok=True)
         
+        from datetime import datetime, timedelta
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        six_days_ago_str = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
+        
         # We will write a test raw_orders.json with predictable violations
         test_orders = [
             {
                 "order_id": "TEST-001",
                 "vendor": "Vina Supply Corp",
-                "order_date": "2026-05-24",
+                "order_date": today_str,
                 "total_amount": 15000.00, # Violates limit of 10,000 USD
                 "barcodes": ["893123456789"]
             },
             {
                 "order_id": "TEST-002",
                 "vendor": "Global Tech Solutions",
-                "order_date": "2026-05-24", # Delivered in 1 day (OK)
+                "order_date": today_str, # Delivered in 0 day (OK)
                 "total_amount": 2500.00,
                 "barcodes": ["123456789"] # Violates barcode prefix (must be 978 or 893)
             },
             {
                 "order_id": "TEST-003",
                 "vendor": "Sino Logistics", # Foreign vendor (5 days max)
-                "order_date": "2026-05-18", # Delivered in 7 days (Violates SLA: 7 > 5)
+                "order_date": six_days_ago_str, # Delivered in 6 days (Violates SLA: 6 > 5)
                 "total_amount": 3500.00,
                 "barcodes": ["8935001718224"]
             },
             {
                 "order_id": "TEST-004",
                 "vendor": "Domestic Supplier A", # Domestic vendor (2 days max)
-                "order_date": "2026-05-24", # Delivered in 1 day (OK)
+                "order_date": today_str, # Delivered in 0 day (OK)
                 "total_amount": 4000.00,
                 "barcodes": ["8935001718225"] # (OK)
             }

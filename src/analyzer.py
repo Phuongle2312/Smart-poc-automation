@@ -75,8 +75,8 @@ def local_offline_analyze(order: Dict[str, Any], relevant_rules: List[Dict[str, 
     barcodes = order["barcodes"]
     
     # Check date formatting & delay
-    # Assume analysis date (current date) is 2026-05-25 for testing consistency
-    analysis_date = datetime.strptime("2026-05-25", "%Y-%m-%d")
+    # Use current date for SLA delay calculation
+    analysis_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     
     try:
         order_date = datetime.strptime(order["order_date"], "%Y-%m-%d")
@@ -153,6 +153,7 @@ def analyze_violations(order: Dict[str, Any], relevant_rules: List[Dict[str, Any
         # Construct rules context block
         rules_context = "\n\n".join([f"--- RULE SECTION: {r['title']} ---\n{r['content']}" for r in relevant_rules])
         
+        analysis_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         prompt = f"""
 You are an AI Compliance Auditor analyzing supplier order compliance against internal regulations.
 
@@ -165,7 +166,7 @@ Vendor: {order['vendor']}
 Order Date: {order['order_date']}
 Total Amount: {order['total_amount']}
 Product Barcodes: {', '.join(order['barcodes'])}
-Current Analysis Date (for delay calculation): 2026-05-25
+Current Analysis Date (for delay calculation): {analysis_date.strftime('%Y-%m-%d')}
 
 Evaluate the order against the provided regulations. You MUST respond ONLY with a JSON object containing these exact keys:
 {{

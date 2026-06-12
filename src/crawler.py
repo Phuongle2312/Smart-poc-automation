@@ -169,11 +169,6 @@ async def perform_login(page: Page, context: BrowserContext):
     logger.info("Login successful.")
     await save_session(context)
 
-async def extract_orders_from_html(html_content: str) -> list:
-    """Parses orders table from HTML page content."""
-    logger.info("Parsing orders from HTML content...")
-    return []
-
 # Selector configuration file for self-healing
 SELECTORS_FILE = "data/selectors.json"
 
