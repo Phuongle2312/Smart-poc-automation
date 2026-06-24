@@ -17,7 +17,7 @@ from qdrant_client.http import models
 # Import get_embedding helper
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.embed_knowledge import get_embedding, QDRANT_PATH, COLLECTION_NAME, get_qdrant_client
+from src.embed_knowledge import get_embedding, QDRANT_PATH, COLLECTION_NAME, get_qdrant_client, LOCK_FILE
 
 # Load environment variables
 load_dotenv()
@@ -33,33 +33,46 @@ RAW_ORDERS_FILE = "data/raw_orders.json"
 REPORT_JSON_FILE = "data/report.json"
 REPORT_TXT_FILE = "data/report.txt"
 
-def query_relevant_rules(client: QdrantClient, order: Dict[str, Any], limit: int = 2) -> List[Dict[str, Any]]:
+SCORE_THRESHOLD = 0.7  # Minimum similarity score to include a rule chunk
+
+def query_relevant_rules(client: QdrantClient, order: Dict[str, Any], limit: int = 3) -> List[Dict[str, Any]]:
     """
     Formulates a semantic search query from order data, generates its vector,
     and retrieves matching rules from Qdrant.
+    Returns top-3 chunks then filters out any with score < SCORE_THRESHOLD.
+    If no chunks qualify, returns empty list (caller should skip LLM call).
     """
     query_text = (
         f"Order from vendor '{order['vendor']}' placed on date '{order['order_date']}' "
         f"with total amount {order['total_amount']}. Barcodes: {', '.join(order['barcodes'])}."
     )
-    
+
     # Generate query embedding vector
     query_vector = get_embedding(query_text)
-    
+
     try:
         response = client.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
             limit=limit
         )
-        
+
         rules = []
         for hit in response.points:
+            if hit.score < SCORE_THRESHOLD:
+                logger.debug(f"Skipping chunk '{hit.payload.get('title', '')}' (score {hit.score:.3f} < {SCORE_THRESHOLD})")
+                continue
             rules.append({
                 "score": hit.score,
                 "title": hit.payload.get("title", ""),
                 "content": hit.payload.get("content", "")
             })
+
+        if not rules:
+            logger.warning(
+                f"No rule chunks met score threshold {SCORE_THRESHOLD} for order '{order.get('order_id')}'. "
+                "Skipping LLM call to avoid hallucination."
+            )
         return rules
     except Exception as e:
         logger.error(f"Error querying Qdrant: {e}")
@@ -139,10 +152,11 @@ def local_offline_analyze(order: Dict[str, Any], relevant_rules: List[Dict[str, 
 def analyze_violations(order: Dict[str, Any], relevant_rules: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyzes an order against retrieved rules using Google Gemini API.
-    Falls back to local rule-based analyzer if no API key is configured.
+    Falls back to local rule-based analyzer if no API key is configured
+    or if no relevant rules met the score threshold.
     """
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    if not api_key or not relevant_rules:
         logger.info("Using local Offline Analyzer (Mock LLM) due to missing GEMINI_API_KEY.")
         return local_offline_analyze(order, relevant_rules)
         
@@ -246,7 +260,14 @@ def run_analysis():
     if not os.path.exists(QDRANT_PATH):
         logger.error(f"Vector Database not found at {QDRANT_PATH}. Run embed_knowledge.py first.")
         return
-        
+
+    if os.path.exists(LOCK_FILE):
+        logger.error(
+            "qdrant.lock detected — embed_knowledge.py is currently updating the vector DB. "
+            "Aborting analysis to prevent reading inconsistent data."
+        )
+        return
+
     client = get_qdrant_client()
     
     analyzed_orders = []

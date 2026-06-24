@@ -143,50 +143,76 @@ def chunk_markdown_file(file_path: str) -> List[Dict[str, Any]]:
     logger.info(f"Chunked knowledge document into {len(chunks)} sections.")
     return chunks
 
+LOCK_FILE = "qdrant.lock"
+
 def build_vector_db():
-    """Reads rules, generates embeddings, and indexes them in Qdrant Local/Docker."""
-    client = get_qdrant_client()
-    
-    # 1. Parse and chunk rules
-    chunks = chunk_markdown_file(KNOWLEDGE_FILE)
-    if not chunks:
-        logger.error("No rules chunks to index.")
-        return
-        
-    # 2. Re-create Qdrant collection
-    logger.info(f"Recreating collection '{COLLECTION_NAME}'...")
-    client.recreate_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=models.VectorParams(
-            size=VECTOR_DIMENSION,
-            distance=models.Distance.COSINE
+    """Reads rules, generates embeddings, and indexes them in Qdrant Local/Docker.
+
+    Uses a file-lock (qdrant.lock) to prevent concurrent reads by analyzer.py
+    while an upsert is in progress.
+    """
+    # Acquire lock before touching Qdrant
+    lock_acquired = False
+    try:
+        with open(LOCK_FILE, "x") as _lf:
+            _lf.write(str(os.getpid()))
+        lock_acquired = True
+        logger.info("Acquired qdrant.lock — starting knowledge upsert.")
+    except FileExistsError:
+        logger.error(
+            "qdrant.lock already exists — another process is updating the vector DB. "
+            "Aborting to avoid concurrent write collision."
         )
-    )
-    
-    # 3. Generate embeddings and upload
-    points = []
-    for idx, chunk in enumerate(chunks):
-        logger.info(f"Processing chunk {idx + 1}/{len(chunks)}: {chunk['title']}")
-        vector = get_embedding(chunk["content"])
-        
-        points.append(
-            models.PointStruct(
-                id=idx,
-                vector=vector,
-                payload={
-                    "title": chunk["title"],
-                    "content": chunk["content"],
-                    "source": chunk["source"]
-                }
+        return
+
+    try:
+        client = get_qdrant_client()
+
+        # 1. Parse and chunk rules
+        chunks = chunk_markdown_file(KNOWLEDGE_FILE)
+        if not chunks:
+            logger.error("No rules chunks to index.")
+            return
+
+        # 2. Re-create Qdrant collection
+        logger.info(f"Recreating collection '{COLLECTION_NAME}'...")
+        client.recreate_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=models.VectorParams(
+                size=VECTOR_DIMENSION,
+                distance=models.Distance.COSINE
             )
         )
-        
-    client.upsert(
-        collection_name=COLLECTION_NAME,
-        wait=True,
-        points=points
-    )
-    logger.info(f"Successfully uploaded {len(points)} knowledge vectors to Qdrant local storage.")
+
+        # 3. Generate embeddings and upload
+        points = []
+        for idx, chunk in enumerate(chunks):
+            logger.info(f"Processing chunk {idx + 1}/{len(chunks)}: {chunk['title']}")
+            vector = get_embedding(chunk["content"])
+
+            points.append(
+                models.PointStruct(
+                    id=idx,
+                    vector=vector,
+                    payload={
+                        "title": chunk["title"],
+                        "content": chunk["content"],
+                        "source": chunk["source"]
+                    }
+                )
+            )
+
+        client.upsert(
+            collection_name=COLLECTION_NAME,
+            wait=True,
+            points=points
+        )
+        logger.info(f"Successfully uploaded {len(points)} knowledge vectors to Qdrant local storage.")
+
+    finally:
+        if lock_acquired and os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+            logger.info("Released qdrant.lock.")
 
 if __name__ == "__main__":
     build_vector_db()

@@ -38,36 +38,52 @@ class OutlookMailGateway:
             
         self.is_running = False
         self.whitelist = []
+        self._rate_limit_seconds = 60  # default; overridden by USER.md
+        self._last_command_times: dict = {}  # {sender_email: datetime}
         self._load_whitelist()
 
     def _load_whitelist(self):
-        """Loads whitelist emails from memory/USER.md JSON."""
+        """Loads whitelist and rate-limit config from memory/USER.md.
+
+        Supports both the new YAML-like SRS schema and legacy JSON format.
+        """
         if os.path.exists(USER_FILE):
             try:
                 with open(USER_FILE, "r", encoding="utf-8") as f:
                     content = f.read().strip()
-                # If USER.md starts with markdown headers, extract JSON or parse directly
-                if content.startswith("{"):
-                    data = json.loads(content)
+
+                # --- New SRS YAML-like schema ---
+                # # USER CONFIG
+                # whitelist_emails:
+                #   - admin@company.com
+                # email_rate_limit_seconds: 60
+                import re
+                emails = re.findall(r"^\s*-\s+(.+@.+)$", content, re.MULTILINE)
+                rate_match = re.search(r"email_rate_limit_seconds:\s*(\d+)", content)
+
+                if emails:
+                    self.whitelist = [e.strip() for e in emails]
+                    if rate_match:
+                        self._rate_limit_seconds = int(rate_match.group(1))
                 else:
-                    # Look for JSON block in markdown
-                    import re
-                    match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
-                    if match:
-                        data = json.loads(match.group(1))
+                    # Legacy JSON format fallback
+                    if content.startswith("{"):
+                        data = json.loads(content)
                     else:
-                        data = {}
-                self.whitelist = data.get("whitelist_emails", [])
+                        json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                        data = json.loads(json_match.group(1)) if json_match else {}
+                    self.whitelist = data.get("whitelist_emails", [])
+
             except Exception as e:
                 logger.error(f"Failed to parse whitelist from {USER_FILE}: {e}")
                 self.whitelist = []
-        
-        # Add default admin email if whitelist is empty
+
+        # Fallback to ADMIN_EMAIL env var if whitelist still empty
         admin_email = os.getenv("ADMIN_EMAIL")
         if not self.whitelist and admin_email:
             self.whitelist = [admin_email]
-            
-        logger.info(f"Loaded whitelist emails: {self.whitelist}")
+
+        logger.info(f"Loaded whitelist: {self.whitelist} | rate_limit={self._rate_limit_seconds}s")
 
     def is_authorized(self, email_address: str) -> bool:
         """Verifies if the email sender address is whitelisted."""
@@ -170,17 +186,68 @@ class OutlookMailGateway:
         except Exception as e:
             logger.error(f"Failed to poll Outlook emails: {e}")
 
+    def _is_rate_limited(self, sender: str) -> bool:
+        """Returns True if this sender sent a command too recently (rate-limit window)."""
+        last_time = self._last_command_times.get(sender.lower())
+        if last_time:
+            elapsed = (datetime.now() - last_time).total_seconds()
+            if elapsed < self._rate_limit_seconds:
+                logger.warning(
+                    f"Rate limit: ignoring command from {sender} "
+                    f"({elapsed:.0f}s ago, limit={self._rate_limit_seconds}s)."
+                )
+                return True
+        return False
+
+    @staticmethod
+    def _extract_approval_keyword(body: str) -> str | None:
+        """
+        Extracts APPROVED/REJECTED from email body.
+        Checks plain-text first line, then full body, then HTML-stripped version.
+        Returns 'APPROVED', 'REJECTED', or None.
+        """
+        import re
+
+        def _search(text: str) -> str | None:
+            upper = text.upper()
+            if "APPROVED" in upper:
+                return "APPROVED"
+            if "REJECTED" in upper:
+                return "REJECTED"
+            return None
+
+        # 1. Check first non-empty line (most reliable for plain-text replies)
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped:
+                result = _search(stripped)
+                if result:
+                    return result
+                break  # Only check first non-empty line here
+
+        # 2. Full body search (catches multi-line replies)
+        result = _search(body)
+        if result:
+            return result
+
+        # 3. Strip HTML tags and search again (handles HTML-formatted replies)
+        html_stripped = re.sub(r"<[^>]+>", " ", body)
+        return _search(html_stripped)
+
     async def _process_received_email(self, sender: str, subject: str, body: str):
         """Processes an incoming authorized email command or approval."""
         if not self.is_authorized(sender):
             return
-            
+
         logger.info(f"Processing email from {sender} - Subject: {subject}")
         
-        # 1. Check for commands
+        # 1. Check for commands (rate-limited)
         if subject.startswith("[CMD]"):
+            if self._is_rate_limited(sender):
+                return
+            self._last_command_times[sender.lower()] = datetime.now()
             cmd = subject.replace("[CMD]", "").strip().upper()
-            
+
             if cmd == "RUN_FULL":
                 logger.info("Received RUN_FULL command email.")
                 send_admin_email(
@@ -219,21 +286,30 @@ class OutlookMailGateway:
                 )
                 
         # 2. Check for self-healing approval (reply to HEALING_APPROVAL)
-        elif self.orchestrator.pending_approval and ("[HEALING_APPROVAL]" in subject or "RE:" in subject.upper() or "FW:" in subject.upper()):
-            body_upper = body.upper()
-            if "APPROVED" in body_upper:
+        elif self.orchestrator.pending_approval and (
+            "[HEALING_APPROVAL]" in subject
+            or "RE:" in subject.upper()
+            or "FW:" in subject.upper()
+        ):
+            keyword = self._extract_approval_keyword(body)
+            if keyword == "APPROVED":
                 logger.info("Self-healing APPROVED by email response.")
                 self.orchestrator.approval_result = "APPROVED"
                 send_admin_email(
                     "✅ [HEALING] Selector Approved",
                     "Thank you. The proposed CSS selector modification has been approved and applied. Resuming crawler..."
                 )
-            elif "REJECTED" in body_upper:
+            elif keyword == "REJECTED":
                 logger.warning("Self-healing REJECTED by email response.")
                 self.orchestrator.approval_result = "REJECTED"
                 send_admin_email(
                     "❌ [HEALING] Selector Rejected",
                     "The proposed CSS selector modification was rejected. Crawler aborted."
+                )
+            else:
+                logger.warning(
+                    f"Approval email from {sender} received but no APPROVED/REJECTED keyword found. "
+                    "Waiting for next reply."
                 )
 
     async def _execute_pipeline_and_respond(self, sender: str):

@@ -61,17 +61,28 @@ ADMIN_EMAIL=admin_account@yourcompany.com
 *   Định nghĩa cấu trúc đơn hàng bằng Pydantic:
     ```python
     from pydantic import BaseModel, Field
-    from typing import List, Optional
+    from datetime import datetime
+    from typing import Optional
 
     class OrderItem(BaseModel):
         order_id: str = Field(..., min_length=5)
         supplier_name: str
-        barcode: str = Field(..., pattern=r'^\d{13}$') # Barcode chuẩn EAN-13
-        order_date: str
-        delivery_deadline: str
+        barcode: str = Field(..., pattern=r'^\d{13}$')  # Barcode chuẩn EAN-13
+        order_date: datetime                              # ISO 8601, ví dụ: "2026-06-01T08:00:00"
+        delivery_deadline: datetime                       # ISO 8601, ví dụ: "2026-06-04T23:59:59"
         status: str
     ```
 *   Đọc `data/raw_orders.json`, chạy validation và xuất dữ liệu sạch. Ghi nhận log lỗi của bản ghi không hợp lệ vào `logs/crawler_YYYYMMDD.log`.
+
+### Bước 5: Quy tắc xử lý lỗi và Retry
+
+Chiến lược retry sử dụng `Tenacity` với cấu hình sau:
+
+* **Điều kiện retry**: Lỗi mạng (`NetworkError`), HTTP `429 Too Many Requests`, HTTP `5xx Server Error`, `TimeoutError`.
+* **Dừng ngay (abort)**: HTTP `401 Unauthorized` (sai credentials), HTTP `403 Forbidden` (tài khoản bị khóa). Không retry vì retry sẽ làm tăng nguy cơ tài khoản bị block.
+* **Số lần retry tối đa**: 3 lần.
+* **Backoff**: Exponential — 2s, 4s, 8s giữa các lần retry.
+* **Sau 3 lần thất bại**: Ghi log `CRITICAL`, gửi Email SOS đến `ADMIN_EMAIL`, thoát với exit code `1`.
 
 ---
 
@@ -110,3 +121,26 @@ ADMIN_EMAIL=admin_account@yourcompany.com
 | **TC-1.1.3** | Xử lý lỗi nhập sai Credentials | Đổi password trong `.env` thành sai. | 1. Chạy `crawler.py`. | Login thất bại -> Không lưu cookie -> Xuất log lỗi Đăng nhập -> Thoát script với exit code và kích hoạt n8n Email Alert. | Negative |
 | **TC-1.1.4** | Tự động Retry khi mất mạng | Cáp mạng bị ngắt tạm thời trong khi chạy. | 1. Chạy `crawler.py`. <br>2. Mô phỏng mất kết nối mạng (hoặc block URL). | Thư viện `Tenacity` thực hiện retry với exponential backoff. Log ghi nhận các lần thử lại 1, 2, 3. | Resilience |
 | **TC-1.1.5** | Kiểm tra Schema dữ liệu (Pydantic) | File JSON thô có 1 bản ghi bị sai định dạng Barcode (chỉ có 10 số thay vì 13). | 1. Chạy `validator.py` trên file lỗi. | Bản ghi lỗi bị loại bỏ và ghi chi tiết lỗi vào log. Các bản ghi hợp lệ còn lại được ghi nhận bình thường. | Unit |
+
+---
+
+## ✅ 5. Acceptance Criteria (Tiêu chí Nghiệm thu)
+
+* Crawler đăng nhập thành công (qua cookie hoặc credentials) và trích xuất ít nhất 1 đơn hàng mà không cần can thiệp thủ công.
+* `validator.py` từ chối mọi bản ghi có barcode không đúng chuẩn EAN-13 (khác 13 chữ số) và ghi log chi tiết.
+* Khi CAPTCHA thất bại hoặc mạng bị ngắt quá 3 lần retry, hệ thống gửi Email SOS đến `ADMIN_EMAIL` với đính kèm screenshot và thoát sạch (exit code `1`).
+* Toàn bộ credentials (URL, username, password, API key) chỉ tồn tại trong `.env`, không xuất hiện trong mã nguồn hoặc log.
+* Thời gian hoàn thành một chu kỳ cào dữ liệu (login → extract → validate → save) không vượt quá 2 phút trong điều kiện mạng bình thường.
+
+---
+
+## ⚠️ 6. Constraints & Assumptions (Ràng buộc & Giả định)
+
+* **Constraints**:
+  * Python 3.10+ bắt buộc để đảm bảo cú pháp `asyncio` tương thích với Playwright async API.
+  * Tài khoản đối tác phải có quyền xem trang danh sách đơn hàng; không hỗ trợ MFA phần cứng (chỉ TOTP/App Password).
+  * File `data/raw_orders.json` được ghi đè hoàn toàn sau mỗi lần chạy — không giữ lịch sử tích lũy trong file này.
+* **Assumptions**:
+  * Trang web đối tác có cấu trúc bảng HTML ổn định trong ≥ 90% các lần chạy; thay đổi DOM bất thường sẽ kích hoạt Self-healing ở Giai đoạn 4.
+  * 2Captcha API sẵn sàng hoạt động với tỷ lệ giải thành công ≥ 95% cho loại CAPTCHA đang dùng.
+  * Môi trường PoC chạy trên Windows 10/11 với Chromium đã được cài đặt qua `playwright install`.

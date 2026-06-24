@@ -82,6 +82,7 @@ Dưới đây là đặc tả chi tiết cách đo lường các chỉ số thà
 ### KPI 3: End-to-end Performance — Thời gian hoàn thành Pipeline
 *   **Mục tiêu**: `< 3 phút`.
 *   **Ý nghĩa**: Tốc độ xử lý dữ liệu từ khi nhận email lệnh cho đến khi gửi email phản hồi kết quả đến Admin.
+*   **Lưu ý về Email Polling Latency**: Mail Gateway polling mỗi 30 giây, nên thêm tối đa 30 giây vào thời gian thực. Pipeline nội bộ (G1+G2) phải hoàn thành trong **≤ 150 giây** để tổng $\Delta T$ vẫn < 180 giây.
 *   **Phương pháp đo lường**:
     1. Ghi nhận timestamp bắt đầu ($T_{start}$) khi Mail Gateway quét được email lệnh hợp lệ và bắt đầu thực thi.
     2. Ghi nhận timestamp kết thúc ($T_{end}$) khi Mail Gateway gửi thành công email báo cáo phản hồi cho Admin.
@@ -105,8 +106,9 @@ Dưới đây là đặc tả chi tiết cách đo lường các chỉ số thà
 *   **Mục tiêu**: `≥ 70%`.
 *   **Ý nghĩa**: Khả năng của Agent dùng GPT-4o phân tích ảnh màn hình và DOM để sửa code thành công và được Admin duyệt qua email.
 *   **Phương pháp đo lường**:
-    1. Giả lập 10 kịch bản lỗi selector khác nhau trên trang đăng nhập mẫu.
-    2. Kích hoạt cơ chế Self-healing của Agent.
+    1. Giả lập **30 kịch bản lỗi selector** khác nhau (10 kịch bản thay đổi CSS class, 10 kịch bản thay đổi HTML ID, 10 kịch bản thêm/xóa wrapper element) trên trang đăng nhập mẫu.
+    2. Kích hoạt cơ chế Self-healing của Agent cho từng kịch bản.
     3. Admin gửi email duyệt `APPROVED` để Agent áp dụng sửa đổi.
     4. Đếm số lần Selector mới do Agent đề xuất giúp Crawler vượt qua bước lỗi thành công.
-    $$\text{Self-healing Success Rate} = \frac{\text{Số lần sửa đổi chạy thành công}}{\text{10 lần chạy giả lập lỗi}} \times 100\%$$
+    $$\text{Self-healing Success Rate} = \frac{\text{Số lần sửa đổi chạy thành công}}{\text{30 lần chạy giả lập lỗi}} \times 100\%$$
+    *Lưu ý: Tăng từ 10 lên 30 kịch bản để đạt ngưỡng tin cậy thống kê tối thiểu cho tỷ lệ 70% (khoảng tin cậy 95% yêu cầu n ≥ 30).*

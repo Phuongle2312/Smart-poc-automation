@@ -54,18 +54,27 @@ Tài liệu được viết dưới dạng Markdown chuẩn hóa:
 ## Điều 2: SLA Thời gian Giao hàng
 - Các đơn hàng thuộc nhóm "Ưu tiên cao" phải được giao trong vòng 24 giờ kể từ lúc xác nhận.
 - Đơn hàng thông thường phải được giao trong vòng 3 ngày làm việc.
-...
+
+## Điều 3: Tiêu chuẩn Chất lượng Hàng hóa
+- Sản phẩm nhập kho không được có vết nứt, biến dạng, hoặc màu sắc lệch chuẩn quá 10% so với mẫu.
+- Mỗi sản phẩm phải kèm theo phiếu kiểm tra chất lượng (QC checklist) do nhà cung cấp cấp.
+
+## Điều 4: Quy trình Xử lý Vi phạm
+- Vi phạm mức HIGH (SLA > 24h, barcode lỗi): Tự động từ chối đơn và thông báo nhà cung cấp trong vòng 1 giờ.
+- Vi phạm mức MEDIUM (SLA 24h–72h, chất lượng chưa rõ): Chuyển sang hàng đợi kiểm tra thủ công.
+- Vi phạm mức LOW: Ghi nhận vào báo cáo tuần và không chặn giao hàng.
 ```
 
 ### Bước 4: Viết script nạp tri thức `src/embed_knowledge.py`
 *   Đọc file `rag/knowledge.md`.
 *   Sử dụng `RecursiveCharacterTextSplitter` chia nhỏ tài liệu thành các đoạn (chunks) 600 ký tự, overlap 50 ký tự để giữ ngữ cảnh liền mạch.
 *   Tạo embeddings cho từng chunk và nạp vào collection tên `knowledge_rules` trên Qdrant.
+*   **Xử lý ghi đồng thời (Concurrent Write)**: Khi `embed_knowledge.py` đang chạy (upsert), các instance `analyzer.py` song song **không được** đọc collection cùng lúc. Thực thi bằng cách đặt cờ file-lock (`qdrant.lock`) tại thư mục gốc trước khi upsert và xóa cờ sau khi hoàn thành; `analyzer.py` kiểm tra cờ này trước khi query.
 
 ### Bước 5: Viết script phân tích `src/analyzer.py`
 *   Đọc dữ liệu đơn hàng từ `data/raw_orders.json`.
 *   Với mỗi đơn hàng, lấy các trường thông tin chính (ngày giao, mã vạch, nhà cung cấp) để làm truy vấn tìm kiếm ngữ nghĩa (semantic search) trên Qdrant.
-*   Lấy ra top 3 chunks tài liệu có độ tương đồng cao nhất (`score >= 0.7`).
+*   Thực hiện semantic search trên Qdrant: lấy **top 3 chunks có score cao nhất**, sau đó **lọc bỏ** bất kỳ chunk nào có `score < 0.7`. Nếu không có chunk nào đạt ngưỡng 0.7, ghi log cảnh báo và bỏ qua đơn hàng đó (không gửi LLM để tránh hallucination do thiếu ngữ cảnh).
 *   Truyền thông tin đơn hàng và ngữ cảnh quy chế vào Prompt Template gửi tới LLM.
 *   Định nghĩa Schema kết quả trả về bằng Pydantic:
     ```python
@@ -115,3 +124,27 @@ Tài liệu được viết dưới dạng Markdown chuẩn hóa:
 | **TC-2.2.2** | Bỏ qua đơn hàng hợp lệ | Đơn hàng có đầy đủ thông tin hợp lệ, đúng SLA, mã vạch 13 số. | 1. Chạy `analyzer.py` với đơn hàng này. | Kết quả trả về `is_violated: false`, `violation_type: "None"`, mức độ nghiêm trọng `NONE`. | Functional |
 | **TC-2.2.3** | Khống chế Hallucination bằng Structured Output | API LLM phản hồi chậm hoặc trả về văn bản tự do. | 1. Chạy phân tích hàng loạt đơn hàng. | Hệ thống bắt buộc output trả về đúng định dạng JSON khớp với Pydantic schema đã khai báo, không bị lỗi cú pháp JSON. | Resilience |
 | **TC-2.2.4** | Xử lý khi VectorDB không phản hồi | Tắt container Qdrant đột ngột. | 1. Khởi chạy `analyzer.py`. | Script bắt được ngoại lệ kết nối Qdrant, ghi log lỗi kết nối, kích hoạt email alert gửi tới Admin và dừng an toàn. | Exception |
+
+---
+
+## ✅ 5. Acceptance Criteria (Tiêu chí Nghiệm thu)
+
+* `embed_knowledge.py` nạp toàn bộ `rag/knowledge.md` vào Qdrant và báo cáo số chunks đã lưu thành công (> 0 chunks).
+* `analyzer.py` phát hiện đúng ≥ 90% vi phạm trên tập 100 đơn hàng mẫu (30 SLA lỗi, 20 barcode lỗi, 50 hợp lệ) — xem KPI-1.
+* Khi không có chunk nào đạt `score >= 0.7`, hệ thống **không** gửi LLM và ghi log cảnh báo thiếu ngữ cảnh.
+* Output của LLM luôn khớp hoàn toàn với `DefectReport` Pydantic schema (không có lỗi parse JSON).
+* Khi Qdrant offline, `analyzer.py` bắt exception, ghi log và gửi email alert mà không crash silently.
+
+---
+
+## ⚠️ 6. Constraints & Assumptions (Ràng buộc & Giả định)
+
+* **Constraints**:
+  * Qdrant phải chạy trên Docker local tại `localhost:6333` trước khi khởi chạy `embed_knowledge.py` hoặc `analyzer.py`.
+  * Collection `knowledge_rules` phải được tạo mới (hoặc upsert) trước khi chạy phân tích lần đầu.
+  * Dữ liệu đầu vào `data/raw_orders.json` phải đã qua validation của Giai đoạn 1 trước khi truyền sang `analyzer.py`.
+  * Không chạy `embed_knowledge.py` (upsert) đồng thời với `analyzer.py` (read) — sử dụng file-lock `qdrant.lock`.
+* **Assumptions**:
+  * Tài liệu `rag/knowledge.md` được cập nhật thủ công bởi Admin khi có thay đổi quy chuẩn nội bộ; hệ thống không tự động cập nhật.
+  * LLM API (OpenAI/Gemini) có độ trễ phản hồi trung bình < 10 giây cho mỗi đơn hàng; tổng thời gian phân tích 100 đơn < 20 phút.
+  * Embedding model (`text-embedding-3-small`) tạo vector 1536 chiều; thay đổi model sẽ yêu cầu nạp lại toàn bộ knowledge.

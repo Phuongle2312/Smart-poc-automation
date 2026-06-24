@@ -25,3 +25,10 @@ Tài liệu này định nghĩa các quy chuẩn hoạt động bắt buộc đ�
   - Bất kỳ đơn hàng nào vượt quá hạn mức 10,000.00 USD sẽ bị hệ thống tự động gắn cờ vi phạm tài chính để kiểm duyệt thủ công (High severity).
 - Đối với nhà cung ứng **Sino Logistics**:
   - Tổng số tiền đơn hàng bắt buộc phải là số dương lớn hơn 0.
+
+---
+
+## 4. Quy trình Xử lý Vi phạm (Violation Handling Process)
+- **Vi phạm mức HIGH** (SLA vượt quá giới hạn, barcode sai đầu số): Hệ thống tự động từ chối đơn và gửi thông báo đến nhà cung cấp trong vòng **1 giờ** kể từ khi phát hiện vi phạm.
+- **Vi phạm mức MEDIUM** (SLA trong khoảng 24h–72h, chất lượng hàng hóa chưa rõ): Đơn hàng được chuyển sang hàng đợi kiểm tra thủ công; hệ thống gửi email cảnh báo đến Admin.
+- **Vi phạm mức LOW**: Ghi nhận vào báo cáo tổng hợp định kỳ và không chặn quá trình giao hàng.

@@ -57,11 +57,11 @@ Tài liệu SRS của hệ thống được chia thành các phần chi tiết n
 
 | Tệp tài liệu | Thành phần Đặc tả | Nội dung chính |
 | :--- | :--- | :--- |
-| **[Phase_1_RPA.md](file:///e:/Github/smart-poc-automation/SRS/Phase_1_RPA.md)** | RPA & Data Pipeline | Cách Playwright cào dữ liệu, xử lý CAPTCHA, schema validation và gửi cảnh báo qua Email. |
-| **[Phase_2_RAG.md](file:///e:/Github/smart-poc-automation/SRS/Phase_2_RAG.md)** | RAG & Knowledge Base | Nạp VectorDB (Qdrant), prompt engineering cho LLM và gửi báo cáo phân tích qua Email. |
-| **[Phase_3_Vision.md](file:///e:/Github/smart-poc-automation/SRS/Phase_3_Vision.md)** | Thị giác Máy tính & Motor | Fine-tune YOLOv8, điều khiển RoboClaw, và gửi báo cáo sự cố qua Email. |
-| **[Phase_4_Agent.md](file:///e:/Github/smart-poc-automation/SRS/Phase_4_Agent.md)** | Agentic Orchestrator | Bộ nhớ Hermes Agent, cổng kết nối Outlook Mail và cơ chế tự sửa lỗi mã nguồn (Self-healing). |
-| **[System_Integration_Security.md](file:///e:/Github/smart-poc-automation/SRS/System_Integration_Security.md)** | Tích hợp hệ thống & Bảo mật | Pipeline tích hợp, bảo mật thông tin `.env`, phân quyền Email và đo lường KPIs. |
+| **[Phase_1_RPA.md](./Phase_1_RPA.md)** | RPA & Data Pipeline | Cách Playwright cào dữ liệu, xử lý CAPTCHA, schema validation và gửi cảnh báo qua Email. |
+| **[Phase_2_RAG.md](./Phase_2_RAG.md)** | RAG & Knowledge Base | Nạp VectorDB (Qdrant), prompt engineering cho LLM và gửi báo cáo phân tích qua Email. |
+| **[Phase_3_Vision.md](./Phase_3_Vision.md)** | Thị giác Máy tính & Motor | Fine-tune YOLOv8, điều khiển RoboClaw, và gửi báo cáo sự cố qua Email. |
+| **[Phase_4_Agent.md](./Phase_4_Agent.md)** | Agentic Orchestrator | Bộ nhớ Hermes Agent, cổng kết nối Outlook Mail và cơ chế tự sửa lỗi mã nguồn (Self-healing). |
+| **[System_Integration_Security.md](./System_Integration_Security.md)** | Tích hợp hệ thống & Bảo mật | Pipeline tích hợp, bảo mật thông tin `.env`, phân quyền Email và đo lường KPIs. |
 
 ---
 

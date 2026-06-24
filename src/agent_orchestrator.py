@@ -47,30 +47,34 @@ class HermesOrchestrator:
         self.simulation = simulation
         self.is_running = False
         self.stop_requested = False
-        self.auto_approve = True # Default to True for automated tests and standalone runs
+        self.auto_approve = True  # Default to True for automated tests and standalone runs
         self.pending_approval = None
         self.approval_result = None
+        self._healing_attempts = 0
+        self._last_alert_times: dict = {}  # {alert_type: datetime} for dedup
         self._init_memory_files()
         self.cleanup_expired_data()
 
     def _init_memory_files(self):
-        """Initializes empty memory files if they do not exist."""
+        """Initializes memory files with SRS-defined schemas if they do not exist."""
         if not os.path.exists(USER_FILE) or os.path.getsize(USER_FILE) < 20:
-            whitelist_data = {
-                "whitelist_emails": [
-                    "admin_account@yourcompany.com",
-                    "supervisor_account@yourcompany.com"
-                ]
-            }
+            admin_email = os.getenv("ADMIN_EMAIL", "admin_account@yourcompany.com")
+            content = (
+                "# USER CONFIG\n"
+                "whitelist_emails:\n"
+                f"  - {admin_email}\n"
+                "email_rate_limit_seconds: 60\n"
+                "max_healing_attempts: 3\n"
+            )
             with open(USER_FILE, "w", encoding="utf-8") as f:
-                f.write(json.dumps(whitelist_data, indent=2))
-        
+                f.write(content)
+
         if not os.path.exists(MEMORY_FILE) or os.path.getsize(MEMORY_FILE) < 20:
             with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-                f.write("# Long-Term Memory\n\nTracks execution history and learning of Hermes Agent.\n\n## Execution Log\n")
-                
+                f.write("# OPERATION HISTORY\n\nTracks execution history and self-healing events of Hermes Agent.\n")
+
         if not os.path.exists(STATE_FILE) or os.path.getsize(STATE_FILE) < 20:
-            self._update_system_state("Idle", "System initialized and waiting for commands.")
+            self._update_system_state("IDLE", "none", "")
 
     def cleanup_expired_data(self):
         """
@@ -105,24 +109,41 @@ class HermesOrchestrator:
             except Exception as e:
                 logger.error(f"Failed to run data/defects retention cleanup: {e}")
 
-    def _update_system_state(self, state: str, detail: str):
-        """Updates the SYSTEM_STATE.md memory file with current status."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        content = f"""# Current System State
-
-- **Current State**: {state}
-- **Last Updated**: {timestamp}
-- **Detail**: {detail}
-"""
+    def _update_system_state(self, status: str, active_task: str, error_message: str = ""):
+        """Updates SYSTEM_STATE.md using the SRS-defined schema."""
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        content = (
+            "# SYSTEM STATE\n"
+            f"status: {status}\n"
+            f"last_updated: {timestamp}\n"
+            f"active_task: {active_task}\n"
+            f"error_message: {error_message}\n"
+            f"healing_attempts: {self._healing_attempts}\n"
+        )
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(content)
-        logger.info(f"System State updated: {state} - {detail}")
+        logger.info(f"System State updated: {status} / task={active_task}")
 
     def _append_to_memory(self, log_entry: str):
-        """Appends a timestamped log entry to MEMORY.md."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """Appends a timestamped section entry to MEMORY.md using SRS schema format."""
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         with open(MEMORY_FILE, "a", encoding="utf-8") as f:
-            f.write(f"- **[{timestamp}]** {log_entry}\n")
+            f.write(f"\n## [{timestamp}] {log_entry}\n")
+
+    def _send_alert_deduped(self, alert_type: str, subject: str, body: str, attachment_path: str = None):
+        """Sends an admin email alert, suppressing duplicates within 30 minutes."""
+        from src.mail_sender import send_admin_email
+        dedup_window_seconds = 30 * 60  # 30 minutes
+        last_sent = self._last_alert_times.get(alert_type)
+        if last_sent:
+            elapsed = (datetime.now() - last_sent).total_seconds()
+            if elapsed < dedup_window_seconds:
+                logger.warning(
+                    f"Alert '{alert_type}' suppressed (sent {elapsed:.0f}s ago, dedup window={dedup_window_seconds}s)."
+                )
+                return
+        send_admin_email(subject, body, attachment_path=attachment_path)
+        self._last_alert_times[alert_type] = datetime.now()
 
     def get_status(self) -> str:
         """Reads current system state from state file."""
@@ -142,7 +163,7 @@ class HermesOrchestrator:
         """Signals the pipeline to abort."""
         logger.warning("Pipeline stop requested.")
         self.stop_requested = True
-        self._update_system_state("Stopped", "Pipeline execution stopped by user command.")
+        self._update_system_state("IDLE", "none", "Pipeline stopped by user command.")
 
     async def self_heal_selector(self, error_msg: str) -> bool:
         """
@@ -150,7 +171,8 @@ class HermesOrchestrator:
         Simulates parsing faulty HTML, identifying the table structure, and rewriting data/selectors.json.
         """
         logger.warning(f"Self-healing mechanism activated! Error: {error_msg}")
-        self._append_to_memory(f"Self-healing triggered due to crawler failure: {error_msg}")
+        self._update_system_state("HEALING", "self_healing", error_msg[:200])
+        self._append_to_memory(f"Self-healing triggered — crawler failure: {error_msg}")
         
         # Read current selectors
         current_row = "table tbody tr"
@@ -215,14 +237,33 @@ class HermesOrchestrator:
                     await asyncio.sleep(2)
                     
             if self.approval_result == "APPROVED":
-                # Write back fixed selectors
-                with open(SELECTORS_FILE, "w", encoding="utf-8") as f:
-                    json.dump({
-                        "orders_table_rows": new_row,
-                        "orders_table_cells": new_cells
-                    }, f, indent=4)
-                logger.info("Selectors configuration updated successfully.")
-                self._append_to_memory(f"Self-healing successfully updated selector from '{current_row}' to '{new_row}'")
+                # Backup current selectors before overwriting
+                bak_file = SELECTORS_FILE + ".bak"
+                if os.path.exists(SELECTORS_FILE):
+                    import shutil
+                    shutil.copy2(SELECTORS_FILE, bak_file)
+                    logger.info(f"Backed up current selectors to {bak_file}")
+
+                try:
+                    with open(SELECTORS_FILE, "w", encoding="utf-8") as f:
+                        json.dump({
+                            "orders_table_rows": new_row,
+                            "orders_table_cells": new_cells
+                        }, f, indent=4)
+                    logger.info("Selectors configuration updated successfully.")
+                    self._healing_attempts += 1
+                    self._append_to_memory(
+                        f"Self-healing updated selector '{current_row}' -> '{new_row}' (attempt #{self._healing_attempts})"
+                    )
+                except Exception as write_err:
+                    logger.error(f"Failed to write new selectors: {write_err}. Restoring backup.")
+                    if os.path.exists(bak_file):
+                        shutil.copy2(bak_file, SELECTORS_FILE)
+                        logger.info("Restored selectors from backup.")
+                    self.pending_approval = None
+                    self.approval_result = None
+                    return False
+
                 self.pending_approval = None
                 self.approval_result = None
                 return True
@@ -249,8 +290,8 @@ class HermesOrchestrator:
         self.is_running = True
         self.stop_requested = False
         self.cleanup_expired_data()
-        self._update_system_state("Running", "Starting full automated pipeline run.")
-        self._append_to_memory("Started pipeline execution.")
+        self._update_system_state("RUNNING_CRAWLER", "run_full", "")
+        self._append_to_memory("Started pipeline execution (RUN_FULL).")
         
         stats = {
             "crawler": "failed",
@@ -286,8 +327,8 @@ class HermesOrchestrator:
                             continue
                     # Circuit breaker triggered
                     logger.critical("Circuit breaker activated for Phase 1. Aborting run.")
-                    self._update_system_state("Error", f"Crawler failed after {attempt} attempts: {e}")
-                    self._append_to_memory(f"Pipeline aborted. Crawler failed: {e}")
+                    self._update_system_state("ERROR", "none", f"Crawler failed after {attempt} attempts: {e}")
+                    self._append_to_memory(f"Pipeline aborted — Crawler failed after {attempt} attempts: {e}")
                     return stats
 
             if self.stop_requested:
@@ -296,7 +337,7 @@ class HermesOrchestrator:
             # ----------------------------------------------------
             # Phase 2: RAG Compliance Analysis
             # ----------------------------------------------------
-            self._update_system_state("Running", "Performing compliance analysis...")
+            self._update_system_state("ANALYZING_RAG", "run_full", "")
             logger.info("Running Phase 2 Compliance Analyzer...")
             try:
                 run_analysis()
@@ -304,8 +345,8 @@ class HermesOrchestrator:
                 logger.info("Analyzer executed successfully.")
             except Exception as e:
                 logger.error(f"Analyzer failed: {e}")
-                self._update_system_state("Error", f"Analyzer failed: {e}")
-                self._append_to_memory(f"Pipeline aborted. Analyzer failed: {e}")
+                self._update_system_state("ERROR", "none", str(e))
+                self._append_to_memory(f"Pipeline aborted — Analyzer failed: {e}")
                 return stats
                 
             if self.stop_requested:
@@ -314,7 +355,7 @@ class HermesOrchestrator:
             # ----------------------------------------------------
             # Phase 3: Vision Inspection (Simulation / Live)
             # ----------------------------------------------------
-            self._update_system_state("Running", "Performing physical vision inspection...")
+            self._update_system_state("RUNNING_CRAWLER", "run_full", "")
             logger.info("Running Phase 3 Vision Inspector...")
             try:
                 # Read crawled orders
@@ -365,12 +406,12 @@ class HermesOrchestrator:
                 logger.info(f"Vision inspection completed. Defected items rejected: {defects_found}")
                 self._append_to_memory(f"Pipeline run completed successfully. Checked {len(orders)} items. Rejected: {defects_found}")
                 
-                self._update_system_state("Idle", "Pipeline run finished successfully.")
+                self._update_system_state("IDLE", "none", "")
                 
             except Exception as e:
                 logger.error(f"Vision inspection failed: {e}")
-                self._update_system_state("Error", f"Vision inspection failed: {e}")
-                self._append_to_memory(f"Pipeline run warning. Vision failed: {e}")
+                self._update_system_state("ERROR", "none", str(e))
+                self._append_to_memory(f"Pipeline warning — Vision failed: {e}")
                 stats["vision"] = "warning"
                 
             return stats

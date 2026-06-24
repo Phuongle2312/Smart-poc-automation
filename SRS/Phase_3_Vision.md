@@ -80,6 +80,9 @@ pip install ultralytics opencv-python torch roboclaw_python
         *   Chụp và lưu hình ảnh lỗi vào `data/defects/defect_YYYYMMDD_HHMMSS.jpg`.
         *   Ghi log vào `logs/defect_YYYYMMDD.log`.
         *   Gọi hàm `trigger_reject_arm()` trong `actuator.py`.
+*   **Ngưỡng Confidence 80%**: Được chọn dựa trên trade-off giữa False Positive (gạt nhầm sản phẩm đạt chuẩn) và False Negative (bỏ sót lỗi). Trong môi trường PoC, ưu tiên hạn chế False Negative nên chọn ngưỡng 80% thay vì 90%. Có thể điều chỉnh qua biến môi trường `CONF_THRESHOLD` trong `.env`.
+*   **Quản lý vòng đời ảnh lỗi (Data Retention)**: Ảnh lỗi trong `data/defects/` tự động bị xóa sau **7 ngày** theo policy tại [System_Integration_Security.md](./System_Integration_Security.md) mục 2.3. Orchestrator chạy cleanup job định kỳ đảm bảo tuân thủ quy định này.
+*   **CPU Fallback Performance**: Trên CPU (không có GPU/CUDA), `YOLOv8n` đạt ~8–12 FPS ở độ phân giải 640×480. Yêu cầu tối thiểu 15 FPS chỉ đảm bảo khi có GPU hoặc dùng độ phân giải thấp hơn (480×360) trên CPU. Cấu hình qua `CAMERA_WIDTH` và `CAMERA_HEIGHT` trong `.env`.
 
 ---
 
@@ -115,3 +118,27 @@ pip install ultralytics opencv-python torch roboclaw_python
 | **TC-3.2.1** | Kiểm thử Simulation Output | `HW_MODE=false`. Đưa ảnh lỗi con. | 1. Chạy inspector ở chế độ simulation. <br>2. Kiểm tra console output. | Console in ra `[MOCK] RoboClaw Signal: REJECT` đúng thời điểm phát hiện. Ảnh lưu thành công vào `data/defects/`. | Functional |
 | **TC-3.2.2** | Lỗi cổng Serial (Hardware Mode) | `HW_MODE=true` nhưng không cắm cáp RoboClaw vào máy tính. | 1. Chạy `vision_inspector.py`. | Hệ thống bắt lỗi `SerialException`, ghi log cảnh báo lỗi kết nối phần cứng, gửi email thông báo sự cố cho Admin và tự động chuyển sang Simulation Mode (fallback). | Resilience |
 | **TC-3.2.3** | Độ trễ xử lý (FPS) | Luồng camera 1080p chạy trên CPU thông thường. | 1. Khởi chạy luồng live stream. <br>2. Đo tốc độ xử lý FPS. | Tốc độ xử lý đạt tối thiểu 15 FPS (đáp ứng yêu cầu thời gian thực của dây chuyền). | Performance |
+
+---
+
+## ✅ 5. Acceptance Criteria (Tiêu chí Nghiệm thu)
+
+* Mô hình `best.pt` đạt `mAP@0.5 ≥ 80%` trên tập test độc lập (10% dataset) — xem KPI-2.
+* Trong Simulation Mode (`HW_MODE=false`), phát hiện sản phẩm lỗi và in `[MOCK] RoboClaw Signal: REJECT` ra console trong vòng 100ms kể từ khi frame được xử lý.
+* Ảnh lỗi được lưu đúng định dạng `data/defects/defect_YYYYMMDD_HHMMSS.jpg` với timestamp chính xác.
+* Khi cổng Serial bị lỗi (`HW_MODE=true` nhưng không có thiết bị), hệ thống tự động fallback về Simulation Mode và gửi email cảnh báo Admin.
+* Toàn bộ ảnh trong `data/defects/` được tự động xóa sau 7 ngày (cleanup job xác nhận bằng log).
+
+---
+
+## ⚠️ 6. Constraints & Assumptions (Ràng buộc & Giả định)
+
+* **Constraints**:
+  * Yêu cầu tối thiểu 200 ảnh mỗi class (normal/defect) để huấn luyện; dưới ngưỡng này mô hình có nguy cơ overfit.
+  * FPS ≥ 15 chỉ đảm bảo khi có GPU NVIDIA với CUDA, hoặc dùng độ phân giải ≤ 480×360 trên CPU.
+  * `ROBOCLAW_PORT` phải được cấu hình đúng trong `.env` (ví dụ: `COM3` trên Windows, `/dev/ttyACM0` trên Linux) trước khi bật `HW_MODE=true`.
+  * Thư mục `data/defects/` phải có đủ dung lượng ổ đĩa để lưu ảnh trong 7 ngày (ước tính ~500MB với tần suất lỗi 5% và 1 frame/giây).
+* **Assumptions**:
+  * Camera cung cấp luồng ổn định ở độ phân giải tối thiểu 640×480; không hỗ trợ camera analog hoặc luồng RTSP cần thêm cấu hình.
+  * Dataset training phản ánh đúng điều kiện ánh sáng và góc chụp thực tế của dây chuyền sản xuất.
+  * Phiên bản `YOLOv8n.pt` pre-trained (Ultralytics) có sẵn và có thể download trong quá trình setup.
